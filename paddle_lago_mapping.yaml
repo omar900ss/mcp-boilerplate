@@ -1,0 +1,244 @@
+# Conceptual Mapping of Stripe Features to Paddle and Lago
+
+paddle_lago_mapping:
+  description: >
+    This section outlines how functionalities currently handled by Stripe
+    would be mapped to a combination of Paddle (for payment processing,
+    tax, and Merchant of Record responsibilities) and Lago (for advanced
+    billing, subscription management, and usage metering).
+
+  stripe_feature_mapping:
+    - stripe_feature: "One-time Payments (e.g., Stripe Charges API, Payment Intents API, Checkout)"
+      paddle_responsibility: >
+        - Processing the actual payment transaction.
+        - Handling payment gateway integration.
+        - Managing payment security and PCI compliance.
+        - Providing a checkout mechanism (e.g., Paddle.js or hosted checkout).
+        - Calculating and remitting sales tax.
+        - Acting as Merchant of Record.
+      lago_responsibility: >
+        - Potentially triggering the payment request if the one-time payment is related
+          to a specific billable item or service defined in Lago.
+        - Recording the payment status against a customer's account or invoice if applicable.
+      integration_points: >
+        - Application backend would typically initiate a payment with Paddle.
+        - Paddle webhook (e.g., 'Transaction Completed', 'Subscription Payment Succeeded')
+          would notify the application backend.
+        - Application backend updates Lago with payment status if the charge is related to
+          a Lago-managed bill or customer. Lago itself might not directly interact with Paddle
+          for simple one-time charges not tied to a subscription or metered usage.
+
+    - stripe_feature: "Recurring Payments & Subscription Management (e.g., Stripe Subscriptions, Plans, Prices APIs)"
+      paddle_responsibility: >
+        - Securely storing payment methods for recurring billing.
+        - Executing scheduled recurring payments based on instructions.
+        - Handling payment failures, retries, and dunning for payment collection.
+        - Managing tax compliance for recurring transactions.
+        - Acting as Merchant of Record for all transactions.
+      lago_responsibility: >
+        - Defining subscription plans, pricing models (fixed, tiered, per-seat, etc.), and trial periods.
+        - Managing the subscription lifecycle (creation, activation, cancellation, renewal, upgrades, downgrades).
+        - Calculating the amount due for each billing cycle, including any pro-rations or add-ons.
+        - Instructing Paddle when and how much to charge for a subscription.
+        - Generating invoices detailing subscription charges.
+      integration_points: >
+        - Customer signs up for a plan via the application UI.
+        - Application backend creates/updates a subscription in Lago.
+        - Lago calculates the initial/recurring charge and determines the billing date.
+        - Lago could trigger Paddle to collect payment, or the application backend, notified by Lago,
+          could instruct Paddle. A more integrated approach might involve Lago directly telling Paddle
+          (via API or a shared mechanism) to initiate a payment for a subscription.
+        - Paddle processes the payment and sends a webhook (e.g., 'Subscription Payment Succeeded/Failed').
+        - Application backend updates Lago with the payment outcome. Lago updates the subscription status
+          and invoice status accordingly.
+
+    - stripe_feature: "Payment Methods Management (e.g., Stripe PaymentMethods API, SetupIntents API)"
+      paddle_responsibility: >
+        - Securely collecting, storing, and managing customer payment details (e.g., credit card info).
+        - Handling PCI compliance for stored payment methods.
+        - Providing mechanisms for customers to update their payment methods (e.g., via Paddle's UI components).
+      lago_responsibility: >
+        - Associating a customer record with the fact that they have a valid payment method stored in Paddle.
+        - Lago would not store the actual payment details.
+      integration_points: >
+        - Customer adds/updates payment method via a UI that integrates with Paddle.js or Paddle's API.
+        - Paddle stores the payment method and provides a token or identifier.
+        - Application backend updates Lago to indicate that the customer has an active/updated payment method
+          with Paddle, possibly storing a reference to the Paddle payment method ID (non-sensitive).
+
+    - stripe_feature: "Invoicing (e.g., Stripe Invoices API)"
+      paddle_responsibility: >
+        - Potentially generating a simple receipt or invoice for tax purposes as MoR, especially for
+          transactions directly processed by Paddle without complex Lago billing logic.
+      lago_responsibility: >
+        - Generating detailed invoices for subscriptions, usage-based charges, and any other billable items.
+        - Managing invoice lifecycle (draft, open, paid, void).
+        - Applying credits, discounts, and taxes (taxes calculated by Paddle but itemized by Lago).
+        - Providing customer access to invoice history.
+      integration_points: >
+        - Lago generates an invoice when a billing event occurs (e.g., subscription renewal, metered usage threshold).
+        - If payment is due, Lago (or the application backend based on Lago's instruction) triggers Paddle to collect payment.
+        - Paddle processes payment.
+        - Paddle webhook notifies the application backend of payment status.
+        - Application backend updates Lago, marking the invoice as paid.
+        - Lago finalizes the invoice, potentially including Paddle's transaction ID as a payment reference.
+        - The invoice PDF/details are made available to the customer via the application, powered by Lago's data.
+
+    - stripe_feature: "Checkout Pages (e.g., Stripe Checkout)"
+      paddle_responsibility: >
+        - Providing hosted checkout pages or embeddable UI components (like Paddle.js)
+          for collecting payment information and processing transactions.
+        - Ensuring PCI compliance within its checkout environment.
+        - Handling localization and currency conversion during checkout.
+      lago_responsibility: >
+        - Defining the products, plans, or charges that are being sold via the checkout.
+        - If the checkout is for initiating a new subscription, Lago would be the source of truth for the plan details.
+      integration_points: >
+        - For new subscriptions:
+          - Customer selects a plan in the application.
+          - Application backend retrieves plan details from Lago.
+          - Application backend initiates a Paddle checkout session with plan details (amount, currency, recurrence if Paddle handles it directly, or setup for future charges by Lago).
+          - Paddle processes the payment/setup.
+          - Paddle webhook notifies the application backend.
+          - Application backend creates/activates the subscription in Lago and records the payment.
+        - For one-time payments not tied to Lago:
+          - Application initiates Paddle checkout directly.
+
+    - stripe_feature: "Customer Portal (e.g., Stripe Billing Portal)"
+      paddle_responsibility: >
+        - Potentially providing a basic portal for customers to update their payment methods stored with Paddle.
+        - Managing cancellation of subscriptions directly with Paddle if Paddle is the primary subscription manager (less likely in a Lago/Paddle split).
+      lago_responsibility: >
+        - Providing the data for a comprehensive customer portal, including:
+          - Subscription management (view, upgrade, downgrade, cancel plans defined in Lago).
+          - Invoice history (from Lago).
+          - Usage data (if applicable, from Lago).
+          - Account information.
+        - Lago itself might not provide the UI, but its API would power a custom-built portal.
+      integration_points: >
+        - Custom application portal UI fetches data from Lago (subscriptions, invoices, usage).
+        - If payment method update is needed, the portal integrates with Paddle.js or redirects to a Paddle-hosted page.
+        - Subscription changes made in the portal are sent to Lago's API.
+        - Lago then coordinates any necessary payment changes with Paddle (e.g., for plan upgrades).
+
+    - stripe_feature: "Tax Calculation (e.g., Stripe Tax)"
+      paddle_responsibility: >
+        - Calculating and remitting sales tax, VAT, GST globally.
+        - Handling tax compliance as the Merchant of Record.
+        - Providing tax information on its receipts/invoices.
+      lago_responsibility: >
+        - Providing the pre-tax amounts for goods/services to Paddle.
+        - Itemizing the tax amount (calculated by Paddle) on its detailed invoices.
+      integration_points: >
+        - Lago determines the taxable items and their pre-tax price.
+        - When initiating a payment or subscription setup with Paddle, the application backend (or Lago if directly integrated)
+          passes the transaction details to Paddle.
+        - Paddle calculates the applicable taxes based on customer location and product type.
+        - The total amount (including tax) is charged by Paddle.
+        - Paddle's webhook response includes tax information.
+        - Lago records the tax amount on the invoice for clarity, though Paddle handles remittance.
+
+    - stripe_feature: "Discount and Coupon Management (e.g., Stripe Coupons, Promotion Codes API)"
+      paddle_responsibility: >
+        - Applying discount amounts to transactions it processes if Paddle supports coupon codes directly at its checkout/payment layer.
+      lago_responsibility: >
+        - Defining and managing coupon/discount logic (e.g., percentage off, fixed amount off, duration).
+        - Applying discounts to subscription plans or specific charges before calculating the final billable amount.
+        - Tracking coupon usage and validity.
+      integration_points: >
+        - Discounts are defined in Lago.
+        - When a customer applies a coupon in the application:
+          - The application validates the coupon with Lago.
+          - Lago applies the discount to the relevant charges/subscription, calculating the new subtotal.
+          - This discounted subtotal is then used for invoicing (by Lago) and payment processing (by Paddle).
+        - If Paddle has its own coupon system that needs to be used (e.g., for simpler checkouts), there might be a need
+          to synchronize or map Lago coupons to Paddle coupons, or the application ensures the discounted price from Lago
+          is what's passed to Paddle. Preferring Lago as the source of truth for discount logic is cleaner.
+
+    - stripe_feature: "Usage-Based Billing (e.g., Stripe Metered Billing)"
+      paddle_responsibility: >
+        - Processing payments for invoices that include usage-based charges.
+      lago_responsibility: >
+        - Defining billable metrics and their pricing (e.g., per API call, per GB storage).
+        - Ingesting usage data from the application (e.g., via API calls to Lago).
+        - Aggregating usage data over billing periods.
+        - Calculating charges based on usage and applying them to invoices.
+        - Including usage details on invoices.
+      integration_points: >
+        - Application sends usage events to Lago's API.
+        - At the end of a billing cycle (or based on thresholds), Lago aggregates usage and calculates charges.
+        - These charges are added to the customer's invoice in Lago.
+        - Lago (or the application backend based on Lago's instruction) triggers Paddle to collect payment for the invoice amount.
+        - Paddle processes the payment.
+        - Application backend updates Lago with payment status.
+
+    - stripe_feature: "Webhook Notifications (e.g., `checkout.session.completed`, `invoice.paid`, `customer.subscription.updated`)"
+      paddle_responsibility: >
+        - Emitting webhooks for payment-related events:
+          - Payment success/failure.
+          - Subscription payment success/failure (if Paddle manages the payment schedule).
+          - Disputes, refunds.
+          - Potentially subscription lifecycle events if Paddle's own subscription engine is used minimally (e.g. 'Subscription Created', 'Subscription Cancelled' at Paddle's end).
+      lago_responsibility: >
+        - Emitting webhooks for billing and subscription lifecycle events:
+          - Invoice created, finalized, paid, voided.
+          - Subscription created, activated, updated (plan change, renewal), cancelled.
+          - Credit note created.
+          - Usage alert/threshold reached.
+      integration_points: >
+        - Both systems will send webhooks to the application backend.
+        - Application backend needs to listen to:
+          - Paddle webhooks for payment status, dispute notifications, and potentially basic subscription notifications from Paddle.
+          - Lago webhooks for invoice status, subscription lifecycle changes (managed by Lago), credit notes, etc.
+        - The backend then orchestrates updates between systems if necessary (e.g., a Paddle payment success webhook
+          triggers an update to Lago to mark an invoice as paid). Often, the application acts as the central hub,
+          reacting to events from both systems and updating its own state and potentially the other system.
+
+    - stripe_feature: "Reporting and Analytics"
+      paddle_responsibility: >
+        - Providing reports on payment transactions, sales tax collected, payouts, refund rates, dispute rates.
+        - Data related to its role as MoR.
+      lago_responsibility: >
+        - Providing reports on MRR, ARR, churn, active subscriptions, customer lifetime value, usage trends, invoice details.
+        - Data related to billing, subscription metrics, and revenue recognition from a billing perspective.
+      integration_points: >
+        - Data from both Paddle and Lago would need to be consumed, likely by the application's backend or a separate
+          data warehousing/analytics platform.
+        - The application would be responsible for consolidating this data to get a complete financial picture.
+        - For example, Lago provides MRR figures, while Paddle provides data on actual cash flow and fees.
+
+    - stripe_feature: "Dispute Handling"
+      paddle_responsibility: >
+        - Managing the chargeback/dispute process with payment networks.
+        - Notifying the application of new disputes.
+        - Providing a mechanism to submit evidence.
+        - Handling dispute resolution and fund movements.
+      lago_responsibility: >
+        - Potentially adjusting invoice statuses (e.g., marking an invoice as disputed or writing it off) based on
+          dispute outcomes communicated from Paddle via the application.
+        - Providing context or data that might be useful for disputing a charge (e.g., usage logs, subscription history).
+      integration_points: >
+        - Paddle webhook notifies the application backend of a new dispute.
+        - Application backend flags the relevant customer/invoice. It might pull data from Lago (e.g., invoice details,
+          customer interaction history) to help in preparing evidence.
+        - Evidence is submitted to Paddle.
+        - Paddle webhook notifies the application backend of the dispute outcome.
+        - Application backend updates its records and, if necessary, updates Lago (e.g., to void an invoice or issue a credit note if the dispute is lost).
+
+    - stripe_feature: "Refunding Payments"
+      paddle_responsibility: >
+        - Processing the actual refund transaction through the payment gateway.
+        - Handling the movement of funds back to the customer.
+        - Reporting on refunds.
+      lago_responsibility: >
+        - Determining the refund amount, especially for pro-rated refunds on subscriptions or partial refunds.
+        - Issuing credit notes against invoices.
+        - Updating subscription status if the refund implies a cancellation or change.
+      integration_points: >
+        - Refund request initiated in the application (e.g., by a customer service agent).
+        - Application communicates with Lago to calculate the correct refund amount (if complex, e.g., pro-rated subscription)
+          and to create a credit note.
+        - Application instructs Paddle to process the refund for the determined amount, referencing the original transaction.
+        - Paddle processes the refund and sends a webhook.
+        - Application backend updates its records and confirms the credit note status in Lago.
+```

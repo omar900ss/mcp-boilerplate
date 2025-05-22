@@ -1,0 +1,138 @@
+architecture_changes:
+  title: "New Billing and Payment Architecture with Paddle and Lago"
+  introduction: >
+    This section details the proposed architecture for replacing Stripe with a combination of
+    Paddle and Lago. Paddle will serve as the Merchant of Record (MoR), handling payment
+    processing, tax compliance, and checkout. Lago will function as the core billing engine,
+    managing subscription logic, usage-based metering, and invoicing. The MyCloudPlatform (MCP)
+    application will act as the central orchestrator, coordinating interactions between users,
+    Lago, and Paddle.
+
+  components:
+    - component: "Paddle"
+      role: "Payment Processor and Merchant of Record"
+      responsibilities:
+        - "Processing all payment transactions (one-time and recurring)."
+        - "Securely handling and storing customer payment methods (PCI compliance)."
+        - "Providing front-end components (e.g., Paddle.js) for payment information collection and checkout experiences."
+        - "Calculating, collecting, and remitting global sales taxes (VAT, GST, etc.) as the MoR."
+        - "Managing payment-related dunning (retries for failed payments)."
+        - "Handling disputes and chargebacks."
+        - "Processing refunds."
+        - "Emitting webhooks for payment-related events (e.g., payment success/failure, disputes)."
+
+    - component: "Lago"
+      role: "Billing Engine and Subscription Management"
+      responsibilities:
+        - "Defining and managing subscription plans, including various pricing models (fixed, tiered, per-seat, usage-based), trial periods, and add-ons."
+        - "Managing the complete subscription lifecycle (creation, activation, upgrades, downgrades, cancellations, renewals)."
+        - "Ingesting, aggregating, and calculating charges for metered usage (usage-based billing)."
+        - "Generating detailed invoices for all billable items (subscriptions, usage, one-time charges defined in Lago)."
+        - "Managing customer credit balances and applying discounts/coupons at the billing level."
+        - "Providing an API for the MCP application to manage customers, subscriptions, plans, and usage data."
+        - "Emitting webhooks for billing and subscription lifecycle events (e.g., invoice created, subscription renewed/cancelled, usage threshold alerts)."
+
+    - component: "MyCloudPlatform (MCP) Application"
+      role: "Orchestrator and User Interface"
+      responsibilities:
+        - "Providing the user interface for customers to manage their accounts, subscriptions, and view invoices."
+        - "Interacting with Lago's API to manage billing plans, subscriptions, and customer billing data."
+        - "Interacting with Paddle (e.g., via Paddle.js) to initiate payment checkouts and manage payment methods."
+        - "Receiving and processing webhooks from both Paddle and Lago."
+        - "Synchronizing customer data and state between Lago and Paddle where necessary."
+        - "Handling business logic related to user authentication, authorization, and product access based on subscription status."
+        - "Serving as the primary interface for customer support related to billing and subscription issues, by consolidating information from Lago and Paddle."
+
+  key_integration_flows:
+    - flow_name: "New Subscription Signup"
+      description: "Details the process when a new customer signs up for a subscription."
+      steps:
+        - "1. Customer selects a plan and initiates signup via the MCP application UI."
+        - "2. MCP backend creates a customer record in its own database."
+        - "3. MCP backend creates a corresponding customer record in Lago via Lago's API. Lago returns a unique Lago Customer ID."
+        - "4. MCP backend stores the Lago Customer ID with its local customer record."
+        - "5. MCP backend, using product/plan details from Lago, initiates a payment/subscription setup with Paddle. This might involve: "
+          - "   a. Redirecting the user to a Paddle-hosted checkout page, passing Lago customer/plan details as metadata."
+          - "   b. Using Paddle.js to create an inline checkout experience. The MCP backend would fetch necessary plan details from Lago to configure the Paddle checkout (e.g. initial price, currency)."
+        - "6. Customer provides payment details to Paddle. Paddle processes any initial payment and sets up the payment method for future recurring charges. Paddle creates its own customer record and returns/makes available a Paddle Customer ID and/or Subscription ID (Paddle's representation)."
+        - "7. MCP backend receives a notification/callback from Paddle (e.g., via webhook like 'Transaction Completed' or 'Subscription Created' from Paddle) upon successful payment method setup/initial payment."
+        - "8. MCP backend updates its local customer record with the Paddle Customer ID/Subscription ID."
+        - "9. MCP backend then creates the subscription in Lago, associating it with the Lago Customer ID and the specific plan. Lago will now manage the billing cycle, renewals, and future charges for this subscription."
+        - "10. Lago may send an 'Subscription Created' webhook, which MCP can use for final confirmations or logging."
+        - "11. MCP provisions access to the service for the customer."
+
+    - flow_name: "Metered Usage Recording and Billing"
+      description: "Details how metered usage is tracked and billed."
+      steps:
+        - "1. Customer uses services on MCP that generate billable usage (e.g., API calls, data storage)."
+        - "2. MCP application's services track this usage and periodically (e.g., hourly, daily, or event-driven) send usage events to Lago's API. Each event typically includes the Lago Customer ID, the metric code, and the quantity used."
+        - "3. Lago ingests and aggregates this usage data against the customer's active subscription and defined billable metrics."
+        - "4. At the end of the billing cycle (or when a usage threshold is met), Lago automatically calculates the total charges for metered usage based on the aggregated data and the plan's pricing model."
+        - "5. Lago adds these usage charges to the customer's upcoming invoice, along with any recurring subscription fees."
+        - "6. Lago finalizes the invoice. It may send an 'Invoice Created' or 'Invoice Finalized' webhook."
+        - "7. MCP backend, upon receiving the webhook or by polling, retrieves the invoice details from Lago."
+        - "8. MCP backend (or Lago, if configured for direct payment instruction) instructs Paddle to collect payment for the invoiced amount. This instruction would reference the Paddle Customer ID and the specific amount from Lago's invoice."
+        - "9. Paddle processes the payment using the stored payment method. Paddle sends a 'Transaction Completed' or 'Subscription Payment Succeeded/Failed' webhook."
+        - "10. MCP backend receives the Paddle webhook and updates the invoice status in Lago (e.g., marks as paid/unpaid) and its own records."
+
+    - flow_name: "Webhook Processing Strategy"
+      description: "How webhooks from Paddle and Lago will be handled."
+      points:
+        - "Separate Endpoints: Implement distinct webhook listener endpoints in the MCP backend for Paddle and Lago to simplify request handling and signature verification logic (e.g., `/webhooks/paddle` and `/webhooks/lago`)."
+        - "Signature Verification: Each endpoint must strictly verify the signature of incoming webhooks using the respective secret keys provided by Paddle and Lago to ensure authenticity and prevent spoofing."
+        - "Idempotency: Design webhook handlers to be idempotent. Process events based on unique event IDs from Paddle/Lago to prevent duplicate processing if webhooks are resent."
+        - "Asynchronous Processing: Upon receiving a webhook, the endpoint should quickly acknowledge receipt (e.g., with a 200 OK response) and then pass the event payload to an asynchronous processing queue (e.g., using Redis, RabbitMQ, or Kafka)."
+        - "Orchestration Logic: Background workers will process events from the queue. The logic will involve:"
+          - "   - Parsing the event data."
+          - "   - Updating MCP's internal database (e.g., customer status, subscription details, invoice status)."
+          - "   - If an event from one system requires action in the other (e.g., Paddle payment success needs to update a Lago invoice), the worker will make the necessary API calls to Lago or vice-versa, though direct calls from MCP to update state based on primary source webhooks are preferred."
+          - "   - Example: A `invoice.paid` webhook from Stripe (current) would be replaced by a `Transaction Completed` from Paddle. The MCP handler would then call Lago's API to mark the corresponding Lago invoice as paid."
+          - "   - Example: A `customer.subscription.deleted` webhook from Stripe (current) would be replaced by a `subscription.canceled` webhook from Lago. The MCP handler would update its own DB and potentially call Paddle if any specific action is needed there (though typically cancellation in Lago means no further payment instructions to Paddle)."
+        - "Error Handling & Retries: Implement robust error handling and retry mechanisms for webhook processing, including dead-letter queues for events that consistently fail."
+        - "Monitoring & Logging: Extensive logging and monitoring of webhook processing to quickly identify and diagnose issues."
+
+  user_customer_data_management:
+    customer_record_linkage: >
+      - MCP Customer ID: Primary internal identifier within the MyCloudPlatform application.
+      - Lago Customer ID: Generated by Lago upon customer creation via API. Stored by MCP and linked to the MCP Customer ID. This is crucial for all billing and subscription operations managed by Lago.
+      - Paddle Customer ID/Identifier: Generated by Paddle when a customer interacts with Paddle's checkout or when a payment method is stored. Stored by MCP and linked to the MCP Customer ID. This is used for payment processing, refunding, and managing payment methods in Paddle.
+      - Creation Flow:
+        1. User signs up on MCP: MCP Customer ID created.
+        2. MCP creates customer in Lago: Lago Customer ID generated and stored by MCP.
+        3. User provides payment details via Paddle checkout: Paddle Customer ID/Subscription ID generated and stored by MCP.
+      - This tripartite linkage (MCP ID <-> Lago ID, MCP ID <-> Paddle ID) allows MCP to act as the central authority for customer identity while delegating specialized functions to Lago and Paddle.
+
+    existing_stripe_customer_mapping: >
+      - For migration (detailed in a separate migration plan), existing Stripe Customer IDs will need to be mapped to new Lago Customer IDs and Paddle Customer IDs.
+      - A mapping table (Stripe_ID -> Lago_ID, Stripe_ID -> Paddle_ID) will be essential during the transition.
+      - Payment methods from Stripe will need to be re-captured via Paddle, as direct migration of raw payment details is typically not possible or advisable due to PCI compliance. Users will be guided through a process to update their payment information.
+
+  architectural_principles:
+    - principle: "Lago as the Source of Truth for Billing and Subscriptions"
+      description: >
+        Lago will be the definitive system for all aspects of billing logic, subscription plans,
+        pricing, metered usage, and invoice generation. MCP will query Lago for any
+        billing-related information and use Lago's APIs to effect changes in subscriptions or report usage.
+    - principle: "Paddle as the Payment Execution and MoR Layer"
+      description: >
+        Paddle will be exclusively responsible for processing payments, managing payment methods,
+        handling tax compliance as the Merchant of Record, and managing disputes. MCP will direct
+        Paddle to charge customers based on amounts determined by Lago.
+    - principle: "MCP Application as the Orchestrator"
+      description: >
+        The MyCloudPlatform application will serve as the central orchestrator. It will manage
+        user interactions, coordinate API calls between Lago and Paddle, handle webhook events
+        from both systems, and maintain the overall state of the customer lifecycle. It will
+        house the business logic that is not directly related to billing mechanics (Lago) or
+        payment processing (Paddle).
+    - principle: "Decoupled Systems via APIs and Webhooks"
+      description: >
+        Interactions between MCP, Lago, and Paddle will primarily occur via their respective
+        APIs and webhook event systems. This promotes loose coupling, allowing each system
+        to evolve independently and enhancing resilience.
+    - principle: "Secure and Compliant Data Handling"
+      description: >
+        Sensitive payment information will only be handled by Paddle, ensuring PCI DSS compliance.
+        Customer data synchronization between systems will be done securely, and access to each
+        system will be strictly controlled.
+```

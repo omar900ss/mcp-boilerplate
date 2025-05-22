@@ -1,0 +1,137 @@
+# Saudi Arabian Compliance Considerations for Paddle and Lago Integration
+
+saudi_arabia_compliance:
+  title: "Considerations for Saudi Arabian (KSA) Market Compliance"
+  introduction: >
+    This section outlines the strategy and specific configurations required to ensure
+    the MyCloudPlatform (MCP) application, using Paddle and a self-hosted Lago instance,
+    complies with Saudi Arabian regulations, particularly concerning currency,
+    regional payment methods, VAT handling, and data residency.
+
+  paddle_role_and_assumptions:
+    title: "Paddle's Role and Assumptions for KSA"
+    summary: >
+      Paddle, as the Merchant of Record (MoR), is assumed to play a crucial role in
+      handling KSA-specific payment and tax requirements.
+    assumptions_and_capabilities:
+      - point: "SAR Currency Support"
+        description: >
+          Assumption: Paddle can process payments in Saudi Riyal (SAR) and settle funds
+          in SAR or the company's preferred currency. MCP will configure product prices
+          in SAR for KSA customers.
+      - point: "Regional Payment Methods"
+        description: >
+          Assumption: Paddle supports popular Saudi Arabian payment methods (e.g., Mada cards,
+          SADAD Payment System, or local bank transfers) either directly or through
+          integrations. If not directly, this might require additional configuration or
+          local payment gateway integration facilitated by Paddle.
+      - point: "KSA VAT Handling"
+        description: >
+          Assumption: Paddle, as MoR, will correctly calculate, collect, and remit
+          Saudi Arabian VAT (currently 15%) on all transactions for KSA customers.
+          This includes applying VAT based on the customer's location (determined by billing
+          address and IP, managed by Paddle) and the nature of the service (digital service).
+          Paddle will also handle VAT registration and reporting obligations in KSA on behalf
+          of MCP.
+      - point: "E-invoicing (Fatoorah) Compliance"
+        description: >
+          Assumption: Paddle's invoicing/receipt capabilities, or the ability to provide
+          necessary transaction data, will be sufficient to meet the basic requirements of
+          Saudi Arabia's e-invoicing (Fatoorah) system, phase one (generation and storage).
+          For phase two (integration with ZATCA), further investigation is needed on Paddle's
+          roadmap or if MCP needs to supplement this with data from Lago and Paddle.
+          As MoR, Paddle should ideally manage this.
+
+  self_hosted_lago_contribution:
+    title: "Self-Hosted Lago and Data Residency"
+    contribution: >
+      Deploying Lago as a self-hosted instance within Saudi Arabia (or a jurisdiction
+      compliant with KSA data regulations) directly addresses data residency requirements.
+    points:
+      - point: "Customer Billing Data Location"
+        description: >
+          All customer billing history, subscription details, usage records, and generated
+          invoices (by Lago) will reside on servers physically located within KSA (if the
+          self-hosted instance is deployed there). This helps comply with regulations
+          stipulating that personal and transactional data of Saudi citizens/residents
+          should be stored locally.
+      - point: "Reduced Cross-Border Data Transfer"
+        description: >
+          Minimizes the transfer of sensitive billing data outside of KSA, as the core
+          billing engine (Lago) is local. Data exchanged with Paddle (which is external)
+          would primarily be for payment processing and tax calculation on individual
+          transactions, which is a necessary part of using an international MoR.
+      - point: "Control Over Data"
+        description: >
+          Self-hosting provides MCP with greater control over the data, security measures,
+          and audit trails for the billing information stored within Lago, facilitating
+          compliance demonstrations.
+
+  specific_configurations_for_compliance:
+    title: "Specific Configurations in Paddle, Lago, and MCP"
+    paddle_configurations:
+      - item: "Enable SAR Currency"
+        details: "Ensure SAR is an active currency in the Paddle dashboard for transactions."
+      - item: "KSA VAT Configuration"
+        details: >
+          Verify that Paddle is correctly configured to apply KSA VAT (currently 15%)
+          for customers identified as being from Saudi Arabia. This includes setting up
+          product tax codes correctly if Paddle uses them to determine taxability.
+      - item: "Payment Methods"
+        details: "Activate relevant KSA local payment methods if available in Paddle's offerings."
+      - item: "Invoice/Receipt Customization"
+        details: >
+          Ensure Paddle's receipts/invoices issued to KSA customers include necessary
+          details like VAT registration number (Paddle's as MoR), clear indication of VAT,
+          and potentially customer's VAT ID if B2B and applicable. This needs to align
+          with basic Fatoorah requirements.
+
+    lago_configurations:
+      - item: "Currency Setup for Plans"
+        details: "Define product/plan pricing in SAR within Lago for KSA-specific plans."
+      - item: "Invoice Template Customization (Lago)"
+        details: >
+          Lago's invoice templates should be customized to include:
+          - Clear itemization of charges in SAR.
+          - Display of VAT amount (calculated by Paddle, but itemized by Lago based on data from Paddle).
+          - MCP's business details (address, potentially local commercial registration).
+          - Customer's details, including VAT ID if provided for B2B transactions.
+          - Sequential invoice numbering.
+          - QR code for e-invoicing (Fatoorah Phase 2), if Lago supports this or can integrate with a local e-invoicing solution. This is a significant requirement and may need custom development or a third-party integration with Lago if not natively supported.
+      - item: "Tax Codes (if applicable in Lago)"
+        details: >
+          If Lago requires tax codes to be passed to Paddle (unlikely, as Paddle as MoR should handle this determination), ensure these are correctly set up for KSA. Typically, Lago would send pre-tax amounts, and Paddle would apply the tax.
+      - item: "Customer Data Fields"
+        details: >
+          Ensure Lago's customer model can store necessary KSA-specific information,
+          such as customer VAT registration numbers for B2B clients, which might be needed
+          on invoices.
+
+    mcp_application_configurations:
+      - item: "Localization for KSA Users"
+        details: >
+          Frontend to be localized in Arabic for KSA users, including:
+          - Pricing display in SAR.
+          - Dates and numbers formatted according to KSA conventions.
+          - Right-to-left (RTL) text direction for UI elements.
+          - Terms of Service and Privacy Policy available in Arabic and compliant with KSA laws.
+      - item: "Address Forms"
+        details: "Ensure address input forms are adapted for KSA address formats, including regions and city names."
+      - item: "Currency Display"
+        details: "Consistently display prices and invoices in SAR throughout the user journey for KSA customers."
+      - item: "VAT ID Collection"
+        details: >
+          For B2B customers, provide a mechanism to collect their VAT registration number,
+          store it (potentially in both MCP's DB and Lago), and ensure it's passed to
+          Lago/Paddle if required for invoicing.
+      - item: "E-invoicing Data Consolidation (if needed)"
+        details: >
+          If Paddle's solution for Fatoorah is insufficient, MCP might need to pull data
+          from both Lago (invoice details) and Paddle (transaction/tax details) to feed
+          into a separate KSA ZATCA-compliant e-invoicing system. This is a significant
+          potential complexity.
+      - item: "User Interface for Payment Methods"
+        details: >
+          Ensure the UI clearly presents payment options, highlighting those relevant to KSA users,
+          and correctly integrates with Paddle.js for SAR transactions and local payment methods.
+```

@@ -1,0 +1,164 @@
+migration_requirements:
+  code_modifications:
+    description: "Details on existing files to be modified and new files to be created for the Paddle and Lago integration."
+    existing_files:
+      - file_path: "src/tools/onetimeAdd.ts"
+        description: "Modify to handle one-time payments."
+        changes:
+          - "Remove Stripe API calls for creating charges or payment intents."
+          - "Integrate with MCP application logic to potentially create a customer/order in Lago if the one-time item needs to be tracked there, or if it's a precursor to a subscription."
+          - "Initiate payment through Paddle: This might involve calling a backend function that uses the Paddle SDK/API to create a transaction or generate a checkout link/session for Paddle.js."
+          - "Update logic to handle responses and confirmations from Paddle (e.g., payment success, failure) instead of Stripe."
+          - "Adjust any local database updates to reflect payment status from Paddle and potentially reference Lago entities."
+
+      - file_path: "src/tools/subscriptionAdd.ts"
+        description: "Modify to handle subscription creation."
+        changes:
+          - "Remove Stripe API calls for creating customers, subscriptions, and plans (plans will be managed in Lago)."
+          - "Add API calls to Lago to create/retrieve customer records."
+          - "Add API calls to Lago to create subscriptions, linking them to the Lago customer and appropriate Lago plan."
+          - "Integrate with Paddle for payment method setup: The frontend will use Paddle.js for capturing payment details. The backend might need to generate a Paddle 'pay link' or transaction for an initial setup fee or trial, based on instructions from Lago or MCP logic."
+          - "Store Lago subscription ID and Paddle customer/payment identifiers in the local database, replacing Stripe IDs."
+          - "Update logic to listen for Lago webhooks (via `src/webhooks/lago.ts`) for subscription status changes, rather than Stripe webhooks."
+
+      - file_path: "src/tools/meteredAdd.ts"
+        description: "Modify to report usage for metered billing."
+        changes:
+          - "Remove Stripe API calls for reporting usage (e.g., Stripe's usage records API)."
+          - "Add API calls to Lago to submit usage events/records for specific customers and billable metrics defined in Lago."
+          - "Ensure that customer identification uses Lago customer IDs."
+          - "Error handling for Lago API responses (e.g., invalid customer, metric not found)."
+
+      - file_path: "src/tools/checkPaymentHistory.ts"
+        description: "Modify to fetch payment/invoice history."
+        changes:
+          - "Remove Stripe API calls for fetching charge history or invoices."
+          - "Add API calls to Lago to fetch invoice history for a customer (Lago will be the source of truth for what was billed)."
+          - "Optionally, if direct payment transaction details are needed, query Paddle (though typically Lago's invoice data, which reflects payment status, should suffice for customer display)."
+          - "Update data transformation logic to work with Lago's invoice and Paddle's transaction data formats."
+          - "Ensure customer identification uses Lago customer IDs."
+
+      - file_path: "src/index.ts (or main router/application setup file)"
+        description: "Update to include new webhook routes and initialize new services."
+        changes:
+          - "Add routes for Paddle webhooks (e.g., `/webhooks/paddle`) pointing to the handler in `src/webhooks/paddle.ts`."
+          - "Add routes for Lago webhooks (e.g., `/webhooks/lago`) pointing to the handler in `src/webhooks/lago.ts`."
+          - "Initialize Lago and Paddle client services (`lagoClient.ts`, `paddleClient.ts`) if they require setup during application startup (e.g., configuring API keys, creating singleton instances)."
+          - "Remove any Stripe-specific webhook route and Stripe SDK initialization."
+
+      - file_path: "package.json"
+        description: "Update project dependencies."
+        changes:
+          - "Remove Stripe SDK (`stripe`)."
+          - "Add Paddle Node.js SDK (e.g., `@paddle/paddle-node-sdk` or equivalent official/community SDK)."
+          - "Add Lago Node.js client/SDK (e.g., `lago-javascript-client` or a custom wrapper using a generic HTTP client like `axios` or `node-fetch`)."
+          - "Update other dependencies if version conflicts arise or new versions are needed for compatibility."
+
+      - file_path: "wrangler.jsonc (or similar for environment variable definitions, e.g., .env files)"
+        description: "Update environment variables for new services."
+        changes:
+          - "Remove Stripe API keys (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET)."
+          - "Add Paddle API Key / Auth Token (e.g., PADDLE_API_KEY, PADDLE_CLIENT_SIDE_TOKEN, PADDLE_WEBHOOK_SECRET)."
+          - "Add Lago API Key (e.g., LAGO_API_KEY, LAGO_ORG_ID) and Lago Webhook Secret (e.g., LAGO_WEBHOOK_SECRET)."
+          - "Update any other environment-specific configurations related to these services."
+
+    new_files:
+      - file_path: "src/webhooks/paddle.ts"
+        description: "Handler for incoming webhooks from Paddle."
+        purpose_and_core_logic:
+          - "Purpose: To receive, verify, and process webhook events from Paddle related to payments, subscriptions (if any managed by Paddle directly), and other account events."
+          - "Core Logic:"
+            - "Exposes an HTTP endpoint (e.g., POST `/webhooks/paddle`)."
+            - "Verifies webhook signatures using Paddle's webhook secret to ensure authenticity."
+            - "Parses the webhook payload."
+            - "Contains a switch/case or handler map for different Paddle event types (e.g., `transaction.completed`, `transaction.updated`, `subscription.created`, `subscription.updated`, `subscription.cancelled`, `dispute.opened`)."
+            - "For relevant events (e.g., payment success), it will:"
+              - "Update the local database (e.g., mark an order/payment as complete)."
+              - "Make API calls to Lago to update the status of corresponding invoices or subscriptions (e.g., mark a Lago invoice as paid)."
+            - "Logs received events and processing outcomes."
+            - "Returns appropriate HTTP responses to Paddle (e.g., 200 OK on success)."
+            - "Implements idempotent event processing."
+
+      - file_path: "src/webhooks/lago.ts"
+        description: "Handler for incoming webhooks from Lago."
+        purpose_and_core_logic:
+          - "Purpose: To receive, verify, and process webhook events from Lago related to billing, subscriptions, invoices, and usage."
+          - "Core Logic:"
+            - "Exposes an HTTP endpoint (e.g., POST `/webhooks/lago`)."
+            - "Verifies webhook signatures using Lago's webhook secret."
+            - "Parses the webhook payload."
+            - "Contains a switch/case or handler map for different Lago event types (e.g., `invoice.created`, `invoice.paid`, `invoice.failed`, `subscription.created`, `subscription.terminated`, `credit_note.created`)."
+            - "For relevant events, it will:"
+              - "Update the local database with subscription status, invoice details, etc."
+              - "Potentially trigger other application logic (e.g., provision/de-provision services based on subscription status, send email notifications to users)."
+              - "If an invoice is marked as 'paid' by Lago (e.g. due to credit application), ensure local records reflect this."
+              - "If an invoice requires payment (e.g., `invoice.drafted` or `invoice.finalized` and payment needs to be collected), this webhook might trigger the MCP application to initiate payment with Paddle using the details from the Lago invoice."
+            - "Logs received events and processing outcomes."
+            - "Returns appropriate HTTP responses to Lago."
+            - "Implements idempotent event processing."
+
+      - file_path: "src/services/lagoClient.ts"
+        description: "Client/SDK wrapper for interacting with the Lago API."
+        purpose_and_core_logic:
+          - "Purpose: To centralize and simplify interactions with the Lago API, providing reusable functions for common operations."
+          - "Core Logic:"
+            - "Initializes with Lago API key and base URL (from environment variables)."
+            - "Provides methods for:"
+              - "Customer management: `createCustomer`, `getCustomer`, `listCustomers`."
+              - "Plan management: `getPlan`, `listPlans` (though plans are mostly managed in Lago UI)."
+              - "Subscription management: `createSubscription`, `getSubscription`, `cancelSubscription`, `listSubscriptions`."
+              - "Usage reporting: `createEvent` (for metered usage)."
+              - "Invoice management: `getInvoice`, `listInvoices`."
+              - "Credit note management: `applyCreditNote`."
+            - "Handles API request construction, authentication (API key in headers), and response parsing."
+            - "Implements error handling for API calls (e.g., network errors, API errors from Lago)."
+            - "Could use an HTTP client like `axios` or `node-fetch` internally, or wrap the official `lago-javascript-client` if deemed suitable."
+
+      - file_path: "src/services/paddleClient.ts"
+        description: "Client/SDK wrapper for interacting with the Paddle API (primarily for backend operations)."
+        purpose_and_core_logic:
+          - "Purpose: To centralize backend interactions with the Paddle API, such as initiating refunds, querying transaction details, or managing subscriptions if any backend control is needed (though most Paddle interactions for new subscriptions/payments will be via Paddle.js on the frontend)."
+          - "Core Logic:"
+            - "Initializes with Paddle API key (from environment variables)."
+            - "Provides methods for:"
+              - "Transaction management: `getTransactionDetails`, `listTransactions`."
+              - "Refunds: `refundPayment`."
+              - "Customer management: `getCustomer` (if needed to fetch Paddle customer details from backend)."
+              - "Generating Pay Links: `createPayLink` (for ad-hoc charges or specific scenarios where Paddle.js is not used directly for checkout initiation by the frontend)."
+            - "Handles API request construction, authentication, and response parsing."
+            - "Implements error handling for Paddle API calls."
+            - "Would likely use the official `@paddle/paddle-node-sdk`."
+
+      - file_path: "src/pages/billing-portal.html (and associated backend logic, e.g., src/routes/billingPortal.ts)"
+        description: "New customer-facing billing portal."
+        purpose_and_core_logic:
+          - "Purpose: To provide customers with a self-service interface to manage their subscriptions, view invoice history, and update payment methods."
+          - "Core Logic (Backend - e.g., `src/routes/billingPortal.ts`):"
+            - "Exposes API endpoints to be consumed by the frontend of the billing portal."
+            - "Fetches subscription details from Lago (`lagoClient.getSubscription`, `lagoClient.listSubscriptions`)."
+            - "Fetches invoice history from Lago (`lagoClient.listInvoices`)."
+            - "Provides a mechanism to initiate payment method updates: This typically involves generating a 'customer portal' session or a specific URL from Paddle that allows the user to securely update their payment details directly with Paddle. The backend would call Paddle's API for this (`paddleClient.generateCustomerPortalLink` or similar)."
+            - "Handles requests to change/cancel subscriptions: These requests would be translated into API calls to Lago (`lagoClient.cancelSubscription`, `lagoClient.updateSubscription`)."
+          - "Core Logic (Frontend - `billing-portal.html` and its JS):"
+            - "Makes authenticated calls to the backend billing portal API endpoints."
+            - "Displays subscription information, invoice list (with download links if Lago provides PDFs or MCP generates them from Lago data)."
+            - "Allows users to select different plans (for upgrades/downgrades)."
+            - "Redirects or uses Paddle.js components for updating payment methods, using links/tokens generated by the backend via Paddle's API."
+
+  external_dependencies:
+    description: "List of new NPM packages to be added and old ones to be removed."
+    added:
+      - package_name: "@paddle/paddle-node-sdk" # Or the specific official/community SDK chosen
+        version: "latest" # Specify version constraint, e.g., "^1.0.0"
+        reason: "For backend communication with the Paddle API (e.g., refunds, transaction lookup, generating pay links/customer portal sessions)."
+      - package_name: "lago-javascript-client" # Or if using a generic HTTP client, list that if not already present
+        version: "latest" # Specify version constraint
+        reason: "For backend communication with the Lago API (customer, subscription, usage, invoice management)."
+      - package_name: "axios" # Or "node-fetch" or other HTTP client, if not already a dependency and chosen for Lago/Paddle integration instead of their specific SDKs.
+        version: "latest"
+        reason: "Generic HTTP client for API interactions if dedicated SDKs are not used or are insufficient."
+    removed:
+      - package_name: "stripe"
+        reason: "Stripe SDK is no longer needed as Stripe is being replaced."
+
+```
